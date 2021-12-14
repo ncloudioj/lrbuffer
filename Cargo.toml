@@ -5,4 +5,15 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "mpmc-coarse"
+path = "src/bin/mpmc_coarse.rs"
+
+[[bin]]
+name = "mpmc-mutex"
+path = "src/bin/mpmc_mutex.rs"
+
 [dependencies]
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.5"

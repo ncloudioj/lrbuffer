@@ -1,215 +1,30 @@
-mod sync;
-mod thread_safe;
-
-pub use thread_safe::RingBufferSafe;
-
-use crate::sync::{Condvar, Mutex, MutexGuard};
+use crate::sync::{AtomicUsize, Condvar, Mutex, MutexGuard, Ordering};
 
 use std::cell::UnsafeCell;
 use std::mem::{self, MaybeUninit};
 
-pub struct RingBuffer<T, const N: usize> {
-    buf: UnsafeCell<[MaybeUninit<T>; N]>,
-    head: UnsafeCell<usize>,
-    tail: UnsafeCell<usize>,
-    is_full: UnsafeCell<bool>,
-}
-
-impl<T, const N: usize> Default for RingBuffer<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T, const N: usize> RingBuffer<T, N> {
-    pub fn new() -> Self {
-        Self {
-            buf: UnsafeCell::new(unsafe { MaybeUninit::uninit().assume_init() }),
-            head: UnsafeCell::new(0),
-            tail: UnsafeCell::new(0),
-            is_full: UnsafeCell::new(false),
-        }
-    }
-
-    pub const fn capacity(&self) -> usize {
-        N
-    }
-
-    pub fn push(&self, item: T) {
-        unsafe {
-            let head = *self.head.get();
-            let mut new_head = head + 1;
-            let mut tail = *self.tail.get();
-            let is_full = *self.is_full.get();
-            let data = &mut (*self.buf.get())[head];
-            if new_head == N {
-                new_head = 0;
-            }
-            if tail == head && is_full {
-                let replaced = mem::replace(data, MaybeUninit::new(item));
-                // This will drop the overwritten value.
-                replaced.assume_init();
-                // Advance the tail.
-                tail += 1;
-                if tail == N {
-                    tail = 0;
-                }
-                *self.tail.get() = tail;
-            } else {
-                data.write(item);
-            }
-            *self.head.get() = new_head;
-            *self.is_full.get() = (new_head == tail && head > tail) || is_full;
-            println!(
-                "Push: head: {}, new_head: {}, tail: {}, is_full: {}",
-                head,
-                new_head,
-                tail,
-                *self.is_full.get()
-            );
-        }
-    }
-
-    pub fn pop(&self) -> Option<T> {
-        unsafe {
-            let head = *self.head.get();
-            let mut tail = *self.tail.get();
-            let is_full = *self.is_full.get();
-            println!("Pop: head: {}, tail: {}, is_full: {}", head, tail, is_full);
-            if tail == head && !is_full {
-                return None;
-            }
-
-            let data = &mut (*self.buf.get())[tail];
-            let replaced = mem::replace(data, MaybeUninit::uninit());
-            let item = replaced.assume_init();
-
-            tail += 1;
-            if tail == N {
-                tail = 0;
-            }
-
-            *self.tail.get() = tail;
-            *self.is_full.get() = false;
-
-            Some(item)
-        }
-    }
-}
-
-pub struct RingBufferExt<T, const N: usize> {
-    buf: UnsafeCell<[MaybeUninit<T>; N]>,
-    push_count: UnsafeCell<usize>,
-    pop_count: UnsafeCell<usize>,
-}
-
-impl<T, const N: usize> Default for RingBufferExt<T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T, const N: usize> RingBufferExt<T, N> {
-    pub fn new() -> Self {
-        Self {
-            buf: UnsafeCell::new(unsafe { MaybeUninit::uninit().assume_init() }),
-            push_count: UnsafeCell::new(0),
-            pop_count: UnsafeCell::new(0),
-        }
-    }
-
-    pub const fn capacity(&self) -> usize {
-        N
-    }
-
-    pub fn push(&self, item: T) {
-        unsafe {
-            let mut n_pop = *self.pop_count.get();
-            let mut n_push = *self.push_count.get();
-
-            let total = if n_push >= n_pop {
-                n_push - n_pop
-            } else {
-                self.capacity() * 2 - n_pop + n_push
-            };
-
-            let head = n_push % self.capacity();
-            let data = &mut (*self.buf.get())[head];
-            if total >= self.capacity() {
-                // The buffer is full
-                let replaced = mem::replace(data, MaybeUninit::new(item));
-                // This will drop the overwritten value.
-                replaced.assume_init();
-
-                // Increment the pop counter.
-                n_pop += 1;
-                if n_pop >= self.capacity() * 2 {
-                    n_pop = 0;
-                }
-                *self.pop_count.get() = n_pop;
-            } else {
-                data.write(item);
-            }
-
-            n_push += 1;
-            if n_push >= self.capacity() * 2 {
-                n_push = 0;
-            }
-            *self.push_count.get() = n_push;
-        }
-    }
-
-    pub fn pop(&self) -> Option<T> {
-        unsafe {
-            let mut n_pop = *self.pop_count.get();
-            let n_push = *self.push_count.get();
-
-            let total = if n_push >= n_pop {
-                n_push - n_pop
-            } else {
-                self.capacity() * 2 - n_pop + n_push
-            };
-
-            if total == 0 {
-                return None;
-            }
-
-            let tail = n_pop % self.capacity();
-            let data = &mut (*self.buf.get())[tail];
-            let replaced = mem::replace(data, MaybeUninit::uninit());
-            let item = replaced.assume_init();
-
-            n_pop += 1;
-            if n_pop >= self.capacity() * 2 {
-                n_pop = 0;
-            }
-            *self.pop_count.get() = n_pop;
-
-            Some(item)
-        }
-    }
-}
-
-pub struct RingBufferUlt<T, const N: usize> {
+pub struct RingBufferSafe<T, const N: usize> {
     buf: UnsafeCell<[MaybeUninit<T>; N]>,
     push_count: Mutex<usize>,
     pop_count: Mutex<usize>,
+    len: AtomicUsize,
     cvar: Condvar,
 }
 
-impl<T, const N: usize> Default for RingBufferUlt<T, N> {
+impl<T, const N: usize> Default for RingBufferSafe<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[allow(clippy::mutex_atomic)]
-impl<T, const N: usize> RingBufferUlt<T, N> {
+impl<T, const N: usize> RingBufferSafe<T, N> {
     pub fn new() -> Self {
         Self {
             buf: UnsafeCell::new(unsafe { MaybeUninit::uninit().assume_init() }),
             push_count: Mutex::new(0),
             pop_count: Mutex::new(0),
+            len: AtomicUsize::new(0),
             cvar: Condvar::new(),
         }
     }
@@ -239,6 +54,33 @@ impl<T, const N: usize> RingBufferUlt<T, N> {
     }
 
     pub fn push(&self, item: T) {
+        let mut push_guard = self.push_count.lock().unwrap();
+        let mut n_push = *push_guard;
+
+        let total = self.len.load(Ordering::Acquire);
+        if total >= self.capacity() {
+            // The buffer is full, delegate this to `push_ex` as it will do it
+            // with the heavier double lock push. Note that the `push_guard`
+            // needs to be dropped before the call.
+            drop(push_guard);
+            return self.push_ex(item);
+        }
+
+        let head = n_push % self.capacity();
+        let data = unsafe { &mut (*self.buf.get())[head] };
+        // The `data` is guaranteed to be "uninit", so just write it directly.
+        data.write(item);
+
+        n_push += 1;
+        if n_push >= self.capacity() * 2 {
+            n_push = 0;
+        }
+        *push_guard = n_push;
+        self.len.fetch_add(1, Ordering::AcqRel);
+        self.cvar.notify_one();
+    }
+
+    fn push_ex(&self, item: T) {
         let mut pop_guard = self.pop_count.lock().unwrap();
         let mut push_guard = self.push_count.lock().unwrap();
         let mut n_push = *push_guard;
@@ -269,6 +111,7 @@ impl<T, const N: usize> RingBufferUlt<T, N> {
             n_push = 0;
         }
         *push_guard = n_push;
+        self.len.fetch_add(1, Ordering::AcqRel);
         self.cvar.notify_one();
     }
 
@@ -285,6 +128,7 @@ impl<T, const N: usize> RingBufferUlt<T, N> {
             n_pop = 0;
         }
         *pop_guard = n_pop;
+        self.len.fetch_sub(1, Ordering::AcqRel);
 
         item
     }
@@ -293,9 +137,7 @@ impl<T, const N: usize> RingBufferUlt<T, N> {
         let mut pop_guard = self.pop_count.lock().unwrap();
         loop {
             pop_guard = self.cvar.wait(pop_guard).unwrap();
-            let n_pop = *pop_guard;
-            let n_push = self.get_push_count();
-            if self.len(n_pop, n_push) > 0 {
+            if self.len.load(Ordering::Acquire) > 0 {
                 break;
             }
         }
@@ -325,25 +167,13 @@ impl<T, const N: usize> RingBufferUlt<T, N> {
             n_pop = 0;
         }
         *pop_guard = n_pop;
+        self.len.fetch_sub(1, Ordering::AcqRel);
 
         Some(item)
     }
-
-    // fn wait_for_push(&self) -> MutexGuard<usize> {
-    // let pop_guard = self.pop_count.lock().unwrap();
-    // self.cvar
-    // .wait_while(pop_guard, |pop_guard| {
-    // let n_pop = *pop_guard;
-    // let n_push = self.get_push_count();
-    // let total = self.len(n_pop, n_push);
-    // // Wait while the buffer is empty.
-    // total == 0
-    // })
-    // .unwrap()
-    // }
 }
 
-unsafe impl<T, const N: usize> Sync for RingBufferUlt<T, N> {}
+unsafe impl<T, const N: usize> Sync for RingBufferSafe<T, N> {}
 
 #[cfg(test)]
 mod tests {
@@ -352,16 +182,16 @@ mod tests {
     use std::thread;
     // use super::RingBuffer;
     // use super::RingBufferExt as RingBuffer;
-    use super::RingBufferUlt as RingBuffer;
+    use super::RingBufferSafe as RingBuffer;
 
     #[test]
-    fn test_capacity() {
+    fn test_safe_capacity() {
         let buf: RingBuffer<i32, 42> = RingBuffer::new();
         assert_eq!(buf.capacity(), 42);
     }
 
     #[test]
-    fn test_push_pop_no_overwrite() {
+    fn test_safe_push_pop_no_overwrite() {
         let buf: RingBuffer<i32, 3> = RingBuffer::new();
         buf.push(1);
         buf.push(2);
@@ -373,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn test_push_pop_overwrite() {
+    fn test_safe_push_pop_overwrite() {
         let buf: RingBuffer<i32, 3> = RingBuffer::new();
         buf.push(1);
         buf.push(2);
@@ -387,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_push_pop_double_overwrites() {
+    fn test_safe_push_pop_double_overwrites() {
         let buf: RingBuffer<i32, 3> = RingBuffer::new();
         buf.push(1);
         buf.push(2);
@@ -405,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_thread_push_pop() {
+    fn test_safe_multi_thread_push_pop() {
         let buf = Arc::new(RingBuffer::<i32, 3>::new());
         let buf_clone = Arc::clone(&buf);
 
@@ -434,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_thread_wait_and_pop() {
+    fn test_safe_multi_thread_wait_and_pop() {
         let buf = Arc::new(RingBuffer::<i32, 3>::new());
 
         let n = 100;
@@ -476,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_thread_multi_proudcers_multi_consumers() {
+    fn test_safe_multi_thread_multi_proudcers_multi_consumers() {
         let buf = Arc::new(RingBuffer::<usize, 20>::new());
 
         let n = 10000;
