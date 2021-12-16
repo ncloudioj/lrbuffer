@@ -13,7 +13,12 @@ path = "src/bin/mpmc_coarse.rs"
 name = "mpmc-mutex"
 path = "src/bin/mpmc_mutex.rs"
 
+[[bin]]
+name = "mpmc-turbo"
+path = "src/bin/mpmc_turbo.rs"
+
 [dependencies]
+parking_lot = "0.11.2"
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.5"

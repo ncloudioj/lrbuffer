@@ -1,22 +1,13 @@
-use lrbuffer::RingBufferExt as RingBuffer;
+use lrbuffer::RingBufferTurbo as RingBuffer;
 
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::thread;
 
-struct Data {
-    data: i32,
-}
-
-impl Drop for Data {
-    fn drop(&mut self) {
-        println!("Dropped: {}", self.data);
-    }
-}
-
 fn main() {
-    let buf = Arc::new(Mutex::new(RingBuffer::<usize, 10240>::new()));
+    println!("BEGIN");
+    let buf = Arc::new(RingBuffer::<usize, 1_100_000>::new());
 
-    let n = 10000;
+    let n = 1_000_000;
     let n_producers = 5;
     let n_consumers = 5;
     let pop_count = Arc::new(AtomicUsize::new(0));
@@ -30,7 +21,7 @@ fn main() {
                 let guard = pc_clone.load(Ordering::SeqCst);
                 if guard < n + n_consumers - 1 {
                     let pc = ps_clone.fetch_add(1, Ordering::AcqRel);
-                    buf_clone.lock().unwrap().push(pc);
+                    buf_clone.push(pc);
                     // println!(
                         // "Push thread: {:?}; PC: {} PUC: {}",
                         // thread::current().id(),
@@ -58,7 +49,7 @@ fn main() {
                 if guard >= n {
                     break;
                 }
-                let data = buf_clone.lock().unwrap().pop();
+                let data = buf_clone.wait_and_pop();
                 let guard = pc_clone.fetch_add(1, Ordering::AcqRel);
                 // println!(
                 // "Pop thread: {:?}; Pop: {}, PCount: {}",
@@ -73,9 +64,4 @@ fn main() {
     for handle in push_handles.into_iter().chain(pop_handles) {
         handle.join().unwrap();
     }
-
-    let buf = RingBuffer::<Data, 10>::new();
-    buf.push(Data { data: 1 });
-    buf.push(Data { data: 2 });
-    buf.push(Data { data: 3 });
 }

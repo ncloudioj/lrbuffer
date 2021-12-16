@@ -4,7 +4,7 @@ use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::thread;
 
 fn main() {
-    let buf = Arc::new(RingBuffer::<usize, 102400>::new());
+    let buf = Arc::new(RingBuffer::<usize, 10240>::new());
 
     let n = 1_000_000;
     let n_producers = 5;
